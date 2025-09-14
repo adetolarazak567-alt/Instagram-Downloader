@@ -1,5 +1,8 @@
+# app.py
 from flask import Flask, request, jsonify, send_from_directory, Response
 import requests
+from bs4 import BeautifulSoup
+import re
 
 app = Flask(__name__)
 
@@ -7,6 +10,44 @@ app = Flask(__name__)
 @app.route("/")
 def home():
     return send_from_directory(".", "index.html")
+
+# === Helper: fetch direct video URL from Instagram post/reel/igtv ===
+def get_instagram_video_url(insta_url):
+    try:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/114.0.0.0 Safari/537.36"
+            )
+        }
+        r = requests.get(insta_url, headers=headers)
+        if r.status_code != 200:
+            return None, "Failed to fetch Instagram post"
+
+        html = r.text
+        soup = BeautifulSoup(html, "html.parser")
+
+        # Look for JSON in window._sharedData
+        scripts = soup.find_all("script", text=re.compile("window._sharedData"))
+        for script in scripts:
+            json_text = re.search(r'window\._sharedData\s*=\s*(\{.*\});', script.string)
+            if json_text:
+                data = json_text.group(1)
+                # Search for video_url
+                match = re.search(r'"video_url":"([^"]+)"', data)
+                if match:
+                    video_url = match.group(1).replace("\\u0026", "&")
+                    return video_url, None
+
+        # Fallback: look for meta property="og:video"
+        og_video = soup.find("meta", property="og:video")
+        if og_video and og_video.get("content"):
+            return og_video["content"], None
+
+        return None, "Video URL not found. Make sure the post/reel/igtv is public."
+    except Exception as e:
+        return None, str(e)
 
 # === API endpoint to fetch Instagram post info ===
 @app.route("/api/fetch", methods=["POST"])
@@ -18,23 +59,26 @@ def fetch_post():
         if not url or "instagram.com" not in url:
             return jsonify({"success": False, "message": "Invalid Instagram URL."}), 400
 
-        # Example: use oEmbed (works only for public posts)
-        api_url = "https://api.instagram.com/oembed/?url=" + url
-        r = requests.get(api_url)
+        # Get direct video URL
+        video_url, error = get_instagram_video_url(url)
+        if not video_url:
+            return jsonify({"success": False, "message": error}), 500
 
-        if r.status_code != 200:
-            return jsonify({"success": False, "message": "Failed to fetch post."}), 500
-
-        oembed = r.json()
+        # Try to get title & author from oEmbed
+        oembed_url = "https://api.instagram.com/oembed/?url=" + url
+        r = requests.get(oembed_url)
+        title = "Instagram Video"
+        author_name = ""
+        if r.status_code == 200:
+            oembed = r.json()
+            title = oembed.get("title", title)
+            author_name = oembed.get("author_name", "")
 
         return jsonify({
             "success": True,
-            "title": oembed.get("title", "Instagram Video"),
-            "author_name": oembed.get("author_name"),
-            "thumbnail": oembed.get("thumbnail_url"),
-            "shortcode": oembed.get("media_id"),
-            # NOTE: oEmbed doesn’t provide direct video url, needs scraper/proxy
-            "videoUrl": url  
+            "title": title,
+            "author_name": author_name,
+            "videoUrl": video_url
         })
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
