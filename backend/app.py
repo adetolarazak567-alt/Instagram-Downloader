@@ -1,12 +1,12 @@
 # app.py
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import yt_dlp
 import os
 import time
 
 app = Flask(__name__)
-CORS(app)  # ✅ allow frontend cross-origin requests
+CORS(app)
 
 # ===== Stats & Cache =====
 stats = {
@@ -19,29 +19,16 @@ stats = {
 }
 cache = {}
 
-# ===== Helper: fetch video via yt-dlp =====
-def fetch_instagram_video(url):
-    try:
-        ydl_opts = {"format": "best", "quiet": True, "noplaylist": True}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            video_url = info.get("url")
-            if not video_url:
-                raise Exception("Could not extract video")
-            return video_url
-    except Exception as e:
-        raise Exception(str(e))
-
-# ===== Download endpoint =====
-@app.route("/download", methods=["POST"])
-def download_video():
+# ===== Fetch video endpoint (POST /api/fetch) =====
+@app.route("/api/fetch", methods=["POST"])
+def fetch_video():
     stats["requests"] += 1
     ip = request.remote_addr
 
     data = request.get_json()
     url = data.get("url")
     if not url or "instagram.com" not in url:
-        return jsonify({"success": False, "error": "Invalid Instagram URL"}), 400
+        return jsonify({"success": False, "message": "Invalid Instagram URL"}), 400
 
     stats["unique_ips"].add(ip)
 
@@ -51,10 +38,19 @@ def download_video():
         video_url = cache[url]
     else:
         try:
-            video_url = fetch_instagram_video(url)
-            cache[url] = video_url
+            ydl_opts = {
+                "format": "best",
+                "quiet": True,
+                "noplaylist": True,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                video_url = info.get("url")
+                if not video_url:
+                    return jsonify({"success": False, "message": "Could not extract video"}), 500
+                cache[url] = video_url
         except Exception as e:
-            return jsonify({"success": False, "error": str(e)}), 500
+            return jsonify({"success": False, "message": str(e)}), 500
 
     stats["downloads"] += 1
     stats["videos_served"] += 1
@@ -64,17 +60,25 @@ def download_video():
         "timestamp": int(time.time())
     })
 
-    return jsonify({"success": True, "videoUrl": video_url})
+    return jsonify({
+        "success": True,
+        "videoUrl": video_url,
+        "title": info.get("title", "Instagram Video"),
+        "author_name": info.get("uploader", "")
+    })
 
-# ===== Proxy download endpoint =====
-@app.route("/proxy")
-def proxy_download():
+# ===== Download endpoint (GET /api/download) =====
+@app.route("/api/download")
+def download_video():
+    from flask import Response
+    import requests
+
     video_url = request.args.get("url")
     if not video_url:
-        return "Missing video URL", 400
+        return "Missing video url", 400
 
     try:
-        r = request.get(video_url, stream=True)
+        r = requests.get(video_url, stream=True)
         if r.status_code != 200:
             return "Failed to fetch video", 500
 
