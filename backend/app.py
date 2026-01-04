@@ -6,7 +6,7 @@ import os
 import time
 
 app = Flask(__name__)
-CORS(app)
+CORS(app)  # ✅ allow frontend cross-origin requests
 
 # ===== Stats & Cache =====
 stats = {
@@ -18,6 +18,19 @@ stats = {
     "download_logs": []
 }
 cache = {}
+
+# ===== Helper: fetch video via yt-dlp =====
+def fetch_instagram_video(url):
+    try:
+        ydl_opts = {"format": "best", "quiet": True, "noplaylist": True}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            video_url = info.get("url")
+            if not video_url:
+                raise Exception("Could not extract video")
+            return video_url
+    except Exception as e:
+        raise Exception(str(e))
 
 # ===== Download endpoint =====
 @app.route("/download", methods=["POST"])
@@ -38,13 +51,8 @@ def download_video():
         video_url = cache[url]
     else:
         try:
-            ydl_opts = {"format": "best", "quiet": True, "noplaylist": True}
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                video_url = info.get("url")
-                if not video_url:
-                    return jsonify({"success": False, "error": "Could not extract video"}), 500
-                cache[url] = video_url
+            video_url = fetch_instagram_video(url)
+            cache[url] = video_url
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
 
@@ -57,6 +65,31 @@ def download_video():
     })
 
     return jsonify({"success": True, "videoUrl": video_url})
+
+# ===== Proxy download endpoint =====
+@app.route("/proxy")
+def proxy_download():
+    video_url = request.args.get("url")
+    if not video_url:
+        return "Missing video URL", 400
+
+    try:
+        r = request.get(video_url, stream=True)
+        if r.status_code != 200:
+            return "Failed to fetch video", 500
+
+        def generate():
+            for chunk in r.iter_content(chunk_size=8192):
+                if chunk:
+                    yield chunk
+
+        return Response(
+            generate(),
+            content_type="video/mp4",
+            headers={"Content-Disposition": "attachment; filename=instagram.mp4"}
+        )
+    except Exception as e:
+        return str(e), 500
 
 # ===== Stats endpoint =====
 @app.route("/stats", methods=["GET"])
