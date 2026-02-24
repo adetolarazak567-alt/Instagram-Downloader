@@ -5,18 +5,46 @@ import yt_dlp
 import requests
 import os
 import time
+import sqlite3
 
 app = Flask(__name__)
 CORS(app)
 
-# ===== Stats =====
-stats = {
-    "requests": 0,
-    "downloads": 0,
-    "videos_served": 0,
-    "unique_ips": set(),
-    "download_logs": []
-}
+# ===== SQLITE DATABASE SETUP =====
+conn = sqlite3.connect("instagram_stats.db", check_same_thread=False)
+c = conn.cursor()
+
+# Create stats table
+c.execute("""
+CREATE TABLE IF NOT EXISTS stats (
+    key TEXT PRIMARY KEY,
+    value INTEGER
+)
+""")
+
+# Initialize stats keys
+for key in ["requests", "downloads", "videos_served"]:
+    c.execute("INSERT OR IGNORE INTO stats (key, value) VALUES (?, ?)", (key, 0))
+
+# Unique IPs table
+c.execute("""
+CREATE TABLE IF NOT EXISTS unique_ips (
+    ip TEXT PRIMARY KEY
+)
+""")
+
+# Download logs table
+c.execute("""
+CREATE TABLE IF NOT EXISTS download_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ip TEXT,
+    url TEXT,
+    timestamp INTEGER
+)
+""")
+
+conn.commit()
+
 
 # ===== Helper: fetch Instagram video =====
 def fetch_instagram_video(url):
@@ -41,10 +69,14 @@ def fetch_instagram_video(url):
             "author_name": info.get("uploader", "")
         }
 
+
 # ===== Fetch endpoint =====
 @app.route("/api/fetch", methods=["POST"])
 def fetch_video():
-    stats["requests"] += 1
+
+    # increment requests
+    c.execute("UPDATE stats SET value = value + 1 WHERE key = 'requests'")
+
     ip = request.remote_addr
 
     data = request.get_json()
@@ -52,20 +84,25 @@ def fetch_video():
     if not url or "instagram.com" not in url:
         return jsonify({"success": False, "message": "Invalid Instagram URL"}), 400
 
-    stats["unique_ips"].add(ip)
+    # add unique ip
+    c.execute("INSERT OR IGNORE INTO unique_ips (ip) VALUES (?)", (ip,))
 
     try:
         info = fetch_instagram_video(url)
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
-    stats["downloads"] += 1
-    stats["videos_served"] += 1
-    stats["download_logs"].append({
-        "ip": ip,
-        "url": url,
-        "timestamp": int(time.time())
-    })
+    # increment stats
+    c.execute("UPDATE stats SET value = value + 1 WHERE key = 'downloads'")
+    c.execute("UPDATE stats SET value = value + 1 WHERE key = 'videos_served'")
+
+    # add log
+    c.execute(
+        "INSERT INTO download_logs (ip, url, timestamp) VALUES (?, ?, ?)",
+        (ip, url, int(time.time()))
+    )
+
+    conn.commit()
 
     return jsonify({
         "success": True,
@@ -73,6 +110,7 @@ def fetch_video():
         "title": info["title"],
         "author_name": info["author_name"]
     })
+
 
 # ===== Download endpoint =====
 @app.route("/api/download")
@@ -99,16 +137,58 @@ def download_video():
     except Exception as e:
         return str(e), 500
 
+
 # ===== Stats endpoint =====
 @app.route("/stats", methods=["GET"])
 def get_stats():
+
+    # fetch stats
+    c.execute("SELECT key, value FROM stats")
+    stats_data = dict(c.fetchall())
+
+    # unique ips count
+    c.execute("SELECT COUNT(*) FROM unique_ips")
+    unique_ips_count = c.fetchone()[0]
+
+    # logs
+    c.execute("SELECT ip, url, timestamp FROM download_logs")
+    logs = [{"ip": ip, "url": url, "timestamp": ts} for ip, url, ts in c.fetchall()]
+
     return jsonify({
-        "requests": stats["requests"],
-        "downloads": stats["downloads"],
-        "videos_served": stats["videos_served"],
-        "unique_ips": len(stats["unique_ips"]),
-        "download_logs": stats["download_logs"]
+        "requests": stats_data.get("requests", 0),
+        "downloads": stats_data.get("downloads", 0),
+        "videos_served": stats_data.get("videos_served", 0),
+        "unique_ips": unique_ips_count,
+        "download_logs": logs
     })
+
+
+# ===== ADMIN RESET =====
+ADMIN_PASSWORD = "razzyadminX567"
+
+@app.route("/admin/reset", methods=["POST"])
+def reset_stats():
+
+    data = request.get_json()
+    password = data.get("password")
+
+    if password != ADMIN_PASSWORD:
+        return jsonify({"success": False, "message": "Wrong password"}), 401
+
+    # reset stats
+    for key in ["requests", "downloads", "videos_served"]:
+        c.execute("UPDATE stats SET value = 0 WHERE key = ?", (key,))
+
+    # clear unique ips
+    c.execute("DELETE FROM unique_ips")
+
+    # clear logs
+    c.execute("DELETE FROM download_logs")
+
+    conn.commit()
+
+    return jsonify({"success": True})
+
 
 # ===== Deployment run =====
 if __name__ == "__main__":
