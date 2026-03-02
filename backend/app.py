@@ -8,6 +8,10 @@ import sqlite3
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import yt_dlp
+from dotenv import load_dotenv
+import os
+
+load_dotenv()  # Load environment variables from .env
 
 app = Flask(__name__)
 CORS(app)
@@ -177,7 +181,7 @@ def get_stats():
     })
 
 # ====== ADMIN RESET ======
-ADMIN_PASSWORD = "razzyadminX567"
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")  # <-- fetch from .env
 
 @app.route("/admin/reset", methods=["POST"])
 def reset_stats():
