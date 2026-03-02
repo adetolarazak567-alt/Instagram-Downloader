@@ -4,3 +4,4 @@ requests
 beautifulsoup4
 gunicorn
 yt_dlp
+python-dotenv
