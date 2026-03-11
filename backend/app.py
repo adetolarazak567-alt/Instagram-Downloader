@@ -67,19 +67,22 @@ def clean_filename(text):
 # ====== FETCH INSTAGRAM VIDEO ======
 def fetch_instagram_video(url):
     ydl_opts = {
-        "format": "best",
-        "quiet": True,
-        "noplaylist": True,
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/114.0.0.0 Safari/537.36"
-            )
-        },
+    "format": "best",
+    "quiet": True,
+    "noplaylist": True,
+    "nocheckcertificate": True,
+    "geo_bypass": True,
+    "http_headers": {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9"
     }
+}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+        info = ydl.extract_info(url, download=False, process=True)
         return {
             "video_url": info.get("url"),
             "title": info.get("title", "Instagram Video"),
@@ -203,6 +206,10 @@ def reset_stats():
     cache.clear()
 
     return jsonify({"success": True})
+
+@app.route("/")
+def home():
+    return "ToolifyX API running"
 
 # ====== START SERVER ======
 if __name__ == "__main__":
