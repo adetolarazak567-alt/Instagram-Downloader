@@ -67,20 +67,21 @@ def clean_filename(text):
 # ====== FETCH INSTAGRAM VIDEO ======
 def fetch_instagram_video(url):
     ydl_opts = {
-    "format": "best",
-    "quiet": True,
-    "noplaylist": True,
-    "nocheckcertificate": True,
-    "geo_bypass": True,
-    "http_headers": {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Accept-Language": "en-US,en;q=0.9"
+        "format": "best",
+        "quiet": True,
+        "noplaylist": True,
+        "nocheckcertificate": True,
+        "geo_bypass": True,
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9"
+        }
     }
-}
+
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
         return {
@@ -95,8 +96,9 @@ def fetch_video():
     ip = request.remote_addr
     data = request.get_json()
     url = data.get("url")
-# remove instagram share parameters
-url = url.split("?")[0]
+
+    # remove instagram share parameters
+    url = url.split("?")[0]
 
     if not url or "instagram.com" not in url:
         return jsonify({"success": False, "message": "Invalid Instagram URL"}), 400
@@ -115,10 +117,11 @@ url = url.split("?")[0]
         c.execute("UPDATE stats SET value = value + 1 WHERE key='cache_hits'")
         c.execute("UPDATE stats SET value = value + 1 WHERE key='downloads'")
         c.execute("UPDATE stats SET value = value + 1 WHERE key='videos_served'")
-        # log download
+
         c.execute("INSERT INTO download_logs (ip,url,timestamp) VALUES (?,?,?)",
                   (ip, url, int(time.time())))
         conn.commit()
+
         return jsonify({"success": True, "videoUrl": video_url, "cached": True})
 
     # ===== FETCH VIDEO =====
@@ -128,10 +131,8 @@ url = url.split("?")[0]
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
-    # store in cache
     cache[url] = video_url
 
-    # update stats
     c.execute("UPDATE stats SET value = value + 1 WHERE key='downloads'")
     c.execute("UPDATE stats SET value = value + 1 WHERE key='videos_served'")
     c.execute("INSERT INTO download_logs (ip,url,timestamp) VALUES (?,?,?)",
@@ -159,7 +160,7 @@ def download_video():
         filename = f"ToolifyX Downloader-{rand}.mp4"
 
         headers = {
-            "Content-Disposition": f'inline; filename="{filename}"',  # preview support
+            "Content-Disposition": f'inline; filename="{filename}"',
             "Content-Type": "video/mp4"
         }
 
@@ -186,25 +187,23 @@ def get_stats():
     })
 
 # ====== ADMIN RESET ======
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")  # <-- fetch from .env
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 
 @app.route("/admin/reset", methods=["POST"])
 def reset_stats():
     data = request.get_json()
     password = data.get("password")
+
     if password != ADMIN_PASSWORD:
         return jsonify({"success": False, "message": "Wrong password"}), 401
 
-    # reset stats
     for key in ["requests", "downloads", "cache_hits", "videos_served"]:
         c.execute("UPDATE stats SET value=0 WHERE key=?", (key,))
 
-    # clear unique IPs and logs
     c.execute("DELETE FROM unique_ips")
     c.execute("DELETE FROM download_logs")
     conn.commit()
 
-    # clear in-memory cache
     cache.clear()
 
     return jsonify({"success": True})
