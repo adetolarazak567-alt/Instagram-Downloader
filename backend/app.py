@@ -95,6 +95,8 @@ def fetch_video():
     ip = request.remote_addr
     data = request.get_json()
     url = data.get("url")
+# remove instagram share parameters
+url = url.split("?")[0]
 
     if not url or "instagram.com" not in url:
         return jsonify({"success": False, "message": "Invalid Instagram URL"}), 400
