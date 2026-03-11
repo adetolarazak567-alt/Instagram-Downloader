@@ -82,7 +82,7 @@ def fetch_instagram_video(url):
     }
 }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False, process=True)
+        info = ydl.extract_info(url, download=False)
         return {
             "video_url": info.get("url"),
             "title": info.get("title", "Instagram Video"),
