@@ -63,22 +63,40 @@ def random_string(length=6):
 def fetch_with_ytdlp(url):
 
     ydl_opts = {
-    "format": "best",
-    "quiet": True,
-    "noplaylist": True,
-    "nocheckcertificate": True,
-    "geo_bypass": True,
-    "http_headers": {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
+        "format": "best",
+        "quiet": True,
+        "noplaylist": True,
+        "nocheckcertificate": True,
+        "geo_bypass": True,
+        "extract_flat": False,
+        "skip_download": True,
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9"
+        }
     }
-}
+
+    # if cookies file exists use it
+    if os.path.exists("cookies.txt"):
+        ydl_opts["cookiefile"] = "cookies.txt"
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
 
         info = ydl.extract_info(url, download=False)
 
+        video_url = None
+
+        if "url" in info:
+            video_url = info["url"]
+
+        elif "formats" in info and len(info["formats"]) > 0:
+            video_url = info["formats"][-1]["url"]
+
+        if not video_url:
+            raise Exception("No downloadable video found")
+
         return {
-            "video_url": info.get("url"),
+            "video_url": video_url,
             "title": info.get("title","Instagram Video"),
             "author_name": info.get("uploader","")
         }
@@ -123,9 +141,12 @@ def fetch_video():
 
     url = data.get("url")
 
+    if not url:
+        return jsonify({"success":False,"message":"No URL provided"}),400
+
     url = url.split("?")[0]
 
-    if not url or "instagram.com" not in url:
+    if "instagram.com" not in url:
         return jsonify({"success":False,"message":"Invalid Instagram URL"}),400
 
     c.execute("UPDATE stats SET value=value+1 WHERE key='requests'")
@@ -138,6 +159,9 @@ def fetch_video():
     if url in cache:
 
         video_url = cache[url]
+
+        c.execute("UPDATE stats SET value=value+1 WHERE key='cache_hits'")
+        conn.commit()
 
         return jsonify({
             "success":True,
@@ -163,7 +187,7 @@ def fetch_video():
 
             return jsonify({
                 "success":False,
-                "message":"Failed to fetch video. The post may be private."
+                "message":"Failed to fetch video. The post may be private or Instagram blocked the request."
             }),400
 
     cache[url] = video_url
