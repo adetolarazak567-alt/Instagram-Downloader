@@ -1,7 +1,7 @@
 flask
-flask_cors
+flask-cors
 requests
 beautifulsoup4
 gunicorn
-yt_dlp
+yt-dlp>=2024.08.06
 python-dotenv
