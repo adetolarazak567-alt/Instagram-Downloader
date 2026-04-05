@@ -1,139 +1,109 @@
-# instagram_app.py
 import time
 import requests
 import random
 import string
-import re
 import sqlite3
+import re
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import yt_dlp
-from dotenv import load_dotenv
-import os
-import json
-
-load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
 
 session = requests.Session()
 
-# ===== SQLITE DATABASE =====
+# ================= DATABASE =================
 conn = sqlite3.connect("insta_stats.db", check_same_thread=False)
 c = conn.cursor()
 
-c.execute('''
+c.execute("""
 CREATE TABLE IF NOT EXISTS stats (
-    key TEXT PRIMARY KEY,
-    value INTEGER
+key TEXT PRIMARY KEY,
+value INTEGER
 )
-''')
+""")
 
 for key in ["requests","downloads","cache_hits","videos_served"]:
     c.execute("INSERT OR IGNORE INTO stats (key,value) VALUES (?,?)",(key,0))
 
 conn.commit()
 
-c.execute('''
-CREATE TABLE IF NOT EXISTS unique_ips (
-ip TEXT PRIMARY KEY
-)
-''')
-
-c.execute('''
-CREATE TABLE IF NOT EXISTS download_logs (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-ip TEXT,
-url TEXT,
-timestamp INTEGER
-)
-''')
-
-conn.commit()
-
-# ===== CACHE =====
+# ================= CACHE =================
 cache = {}
 
-# ===== RANDOM STRING =====
+# ================= RANDOM NAME =================
 def random_string(length=6):
     return ''.join(random.choices(string.ascii_letters + string.digits,k=length))
 
-# ===== INSTAGRAM FETCH (yt-dlp) =====
+# ================= METHOD 1 (YT-DLP) =================
 def fetch_with_ytdlp(url):
 
     ydl_opts = {
-        "format": "best",
         "quiet": True,
-        "noplaylist": True,
+        "format": "best",
+        "skip_download": True,
         "nocheckcertificate": True,
         "geo_bypass": True,
-        "skip_download": True,
-        "extract_flat": False,
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0",
-            "Accept-Language": "en-US,en;q=0.9"
-        }
+        "noplaylist": True
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
 
         info = ydl.extract_info(url, download=False)
 
-        # handle reels / videos / carousels
         if "entries" in info:
             info = info["entries"][0]
 
         formats = info.get("formats", [])
 
         if not formats:
-            raise Exception("No formats found")
+            raise Exception("No formats")
 
-        video_url = formats[-1]["url"]
+        video = formats[-1]["url"]
 
-        return {
-            "video_url": video_url,
-            "title": info.get("title", "Instagram Video"),
-            "author_name": info.get("uploader", "")
-        }
+        return video
 
-# ===== FALLBACK METHOD =====
-def fetch_with_json(url):
+# ================= METHOD 2 (EMBED SCRAPE) =================
+def fetch_from_embed(url):
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
-        "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.instagram.com/",
-        "X-Requested-With": "XMLHttpRequest"
+        "User-Agent":"Mozilla/5.0"
     }
 
-    r = session.get(url + "?__a=1&__d=dis", headers=headers, timeout=15)
+    r = session.get(url + "embed/", headers=headers)
 
-    if r.status_code != 200:
-        raise Exception("Instagram request blocked")
+    match = re.search(r'"video_url":"([^"]+)"', r.text)
 
-    data = r.json()
+    if not match:
+        raise Exception("Embed failed")
 
-    media = data.get("graphql", {}).get("shortcode_media", {})
+    video = match.group(1).replace("\\u0026","&")
 
-    video = media.get("video_url")
+    return video
 
-    if not video:
-        raise Exception("No video found")
+# ================= METHOD 3 (META TAG) =================
+def fetch_from_meta(url):
 
-    return {
-        "video_url": video,
-        "title": "Instagram Video",
-        "author_name": ""
+    headers = {
+        "User-Agent":"Mozilla/5.0"
     }
 
-# ===== FETCH API =====
+    r = session.get(url, headers=headers)
+
+    match = re.search(r'property="og:video" content="([^"]+)"', r.text)
+
+    if not match:
+        raise Exception("Meta failed")
+
+    return match.group(1)
+
+# ================= FETCH API =================
 @app.route("/api/fetch", methods=["POST"])
 def fetch_video():
 
-    ip = request.remote_addr
     data = request.get_json()
+    ip = request.remote_addr
 
     url = data.get("url")
 
@@ -148,65 +118,59 @@ def fetch_video():
     c.execute("UPDATE stats SET value=value+1 WHERE key='requests'")
     conn.commit()
 
-    c.execute("INSERT OR IGNORE INTO unique_ips (ip) VALUES (?)",(ip,))
-    conn.commit()
-
     # ===== CACHE =====
     if url in cache:
-
-        video_url = cache[url]
 
         c.execute("UPDATE stats SET value=value+1 WHERE key='cache_hits'")
         conn.commit()
 
         return jsonify({
             "success":True,
-            "videoUrl":video_url,
+            "videoUrl":cache[url],
             "cached":True
         })
 
-    # ===== TRY YT-DLP =====
+    video = None
+
+    # ===== TRY METHOD 1 =====
     try:
+        video = fetch_with_ytdlp(url)
+    except:
+        pass
 
-        info = fetch_with_ytdlp(url)
-        video_url = info["video_url"]
-
-    except Exception:
-
-        # ===== FALLBACK JSON =====
+    # ===== TRY METHOD 2 =====
+    if not video:
         try:
+            video = fetch_from_embed(url)
+        except:
+            pass
 
-            info = fetch_with_json(url)
-            video_url = info["video_url"]
+    # ===== TRY METHOD 3 =====
+    if not video:
+        try:
+            video = fetch_from_meta(url)
+        except:
+            pass
 
-        except Exception:
+    if not video:
+        return jsonify({
+            "success":False,
+            "message":"Failed to fetch video"
+        }),400
 
-            return jsonify({
-                "success":False,
-                "message":"Failed to fetch video. The post may be private or Instagram blocked the request."
-            }),400
-
-    cache[url] = video_url
+    cache[url] = video
 
     c.execute("UPDATE stats SET value=value+1 WHERE key='downloads'")
     c.execute("UPDATE stats SET value=value+1 WHERE key='videos_served'")
-
-    c.execute(
-        "INSERT INTO download_logs (ip,url,timestamp) VALUES (?,?,?)",
-        (ip,url,int(time.time()))
-    )
-
     conn.commit()
 
     return jsonify({
         "success":True,
-        "videoUrl":video_url,
-        "title":info["title"],
-        "author_name":info["author_name"],
+        "videoUrl":video,
         "cached":False
     })
 
-# ===== DOWNLOAD ROUTE =====
+# ================= DOWNLOAD =================
 @app.route("/api/download")
 def download_video():
 
@@ -215,7 +179,7 @@ def download_video():
     if not video_url:
         return jsonify({"success":False}),400
 
-    r = session.get(video_url,stream=True)
+    r = session.get(video_url, stream=True)
 
     filename = f"ToolifyX-{random_string()}.mp4"
 
@@ -224,13 +188,24 @@ def download_video():
         "Content-Type":"video/mp4"
     }
 
-    return Response(r.iter_content(8192),headers=headers)
+    return Response(r.iter_content(8192), headers=headers)
 
-# ===== HOME =====
+# ================= STATS =================
+@app.route("/stats")
+def stats():
+
+    data = {}
+
+    for row in c.execute("SELECT key,value FROM stats"):
+        data[row[0]] = row[1]
+
+    return jsonify(data)
+
+# ================= HOME =================
 @app.route("/")
 def home():
-    return "ToolifyX API running"
+    return "ToolifyX Instagram API Running"
 
-# ===== START =====
+# ================= START =================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0",port=5000,threaded=True)
+    app.run(host="0.0.0.0", port=5000, threaded=True)
