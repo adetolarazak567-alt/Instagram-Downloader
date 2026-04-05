@@ -68,37 +68,33 @@ def fetch_with_ytdlp(url):
         "noplaylist": True,
         "nocheckcertificate": True,
         "geo_bypass": True,
-        "extract_flat": False,
         "skip_download": True,
+        "extract_flat": False,
         "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+            "User-Agent": "Mozilla/5.0",
             "Accept-Language": "en-US,en;q=0.9"
         }
     }
-
-    # if cookies file exists use it
-    if os.path.exists("cookies.txt"):
-        ydl_opts["cookiefile"] = "cookies.txt"
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
 
         info = ydl.extract_info(url, download=False)
 
-        video_url = None
+        # handle reels / videos / carousels
+        if "entries" in info:
+            info = info["entries"][0]
 
-        if "url" in info:
-            video_url = info["url"]
+        formats = info.get("formats", [])
 
-        elif "formats" in info and len(info["formats"]) > 0:
-            video_url = info["formats"][-1]["url"]
+        if not formats:
+            raise Exception("No formats found")
 
-        if not video_url:
-            raise Exception("No downloadable video found")
+        video_url = formats[-1]["url"]
 
         return {
             "video_url": video_url,
-            "title": info.get("title","Instagram Video"),
-            "author_name": info.get("uploader","")
+            "title": info.get("title", "Instagram Video"),
+            "author_name": info.get("uploader", "")
         }
 
 # ===== FALLBACK METHOD =====
