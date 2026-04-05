@@ -63,10 +63,15 @@ def random_string(length=6):
 def fetch_with_ytdlp(url):
 
     ydl_opts = {
-        "format":"best",
-        "quiet":True,
-        "noplaylist":True
+    "format": "best",
+    "quiet": True,
+    "noplaylist": True,
+    "nocheckcertificate": True,
+    "geo_bypass": True,
+    "http_headers": {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
     }
+}
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
 
@@ -82,14 +87,26 @@ def fetch_with_ytdlp(url):
 def fetch_with_json(url):
 
     headers = {
-        "User-Agent":"Mozilla/5.0"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.instagram.com/",
+        "X-Requested-With": "XMLHttpRequest"
     }
 
-    r = session.get(url+"?__a=1&__d=dis",headers=headers)
+    r = session.get(url + "?__a=1&__d=dis", headers=headers, timeout=15)
+
+    if r.status_code != 200:
+        raise Exception("Instagram request blocked")
 
     data = r.json()
 
-    video = data["graphql"]["shortcode_media"]["video_url"]
+    media = data.get("graphql", {}).get("shortcode_media", {})
+
+    video = media.get("video_url")
+
+    if not video:
+        raise Exception("No video found")
 
     return {
         "video_url": video,
