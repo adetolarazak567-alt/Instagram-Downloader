@@ -37,21 +37,21 @@ def random_string(length=6):
     return ''.join(random.choices(string.ascii_letters + string.digits,k=length))
 
 # ===== CLEAN FILE NAME =====
-def clean_filename(text):
-    text = re.sub(r'[\\/*?:"<>|]', "", text)
-    return text[:120]
-
-# ===== FETCH INSTAGRAM VIDEO =====
 def fetch_instagram_video(url):
+
+    # remove tracking parameters
+    url = url.split("?")[0]
 
     ydl_opts = {
         "quiet": True,
         "noplaylist": True,
-        "format": "best",
+        "format": "best[ext=mp4]",
         "nocheckcertificate": True,
         "geo_bypass": True,
         "http_headers": {
-            "User-Agent": "Mozilla/5.0"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Referer": "https://www.instagram.com/",
+            "Accept-Language": "en-US,en;q=0.9"
         }
     }
 
@@ -61,23 +61,18 @@ def fetch_instagram_video(url):
 
         video_url = None
 
-        # NEW METHOD (IMPORTANT)
         if "formats" in info:
-            formats = info["formats"]
-
-            # pick best mp4
-            for f in reversed(formats):
+            for f in info["formats"]:
                 if f.get("ext") == "mp4" and f.get("url"):
                     video_url = f["url"]
-                    break
 
         if not video_url:
-            raise Exception("Instagram blocked the request")
+            raise Exception("Could not extract Instagram video")
 
         return {
             "video_url": video_url,
-            "title": info.get("title","Instagram Video"),
-            "author": info.get("uploader","")
+            "title": info.get("title", "Instagram Video"),
+            "author": info.get("uploader", "")
         }
 
 # ===== FETCH API =====
@@ -137,16 +132,21 @@ def download():
     if not video_url:
         return jsonify({"success":False}),400
 
-    r = session.get(video_url,stream=True)
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://www.instagram.com/"
+    }
+
+    r = session.get(video_url, headers=headers, stream=True)
 
     filename = f"ToolifyX-{random_string()}.mp4"
 
-    headers = {
-        "Content-Disposition":f'attachment; filename="{filename}"',
-        "Content-Type":"video/mp4"
+    response_headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Type": "video/mp4"
     }
 
-    return Response(r.iter_content(8192),headers=headers)
+    return Response(r.iter_content(8192), headers=response_headers)
 
 # ===== HOME =====
 @app.route("/")
