@@ -4,17 +4,19 @@ import string
 import sqlite3
 import time
 import re
+import json
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import yt_dlp
 from bs4 import BeautifulSoup
+import concurrent.futures
 
 app = Flask(__name__)
 CORS(app)
 
 session = requests.Session()
 
-# Proper browser headers to avoid bot detection
+# Proper browser headers to avoid blocks
 session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -63,8 +65,22 @@ def clean_filename(text):
     text = re.sub(r'\s+', " ", text).strip()
     return text[:120]
 
+def extract_shortcode(url):
+    """Extract Instagram shortcode from various URL formats"""
+    patterns = [
+        r'instagram\.com/p/([^/?]+)',
+        r'instagram\.com/reel/([^/?]+)',
+        r'instagram\.com/tv/([^/?]+)',
+        r'instagram\.com/reels/([^/?]+)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return None
+
 # ==========================
-# METHOD 1: YT-DLP (MOST RELIABLE)
+# METHOD 1: YT-DLP (BEST EFFORT)
 # ==========================
 
 def fetch_ytdlp(url):
@@ -80,10 +96,14 @@ def fetch_ytdlp(url):
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.5",
+                "Referer": "https://www.instagram.com/",
             },
-            "cookiesfrombrowser": None,  # No browser cookies needed for public posts
+            "cookiesfrombrowser": None,
             "ignoreerrors": True,
             "no_warnings": True,
+            "extractor_retries": 3,
+            "fragment_retries": 3,
+            "skip_unavailable_fragments": True,
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -95,12 +115,10 @@ def fetch_ytdlp(url):
         # Get direct video URL
         video_url = info.get("url")
         if not video_url and "formats" in info:
-            # Find best mp4 format
             for f in reversed(info.get("formats", [])):
                 if f.get("ext") == "mp4" and f.get("url"):
                     video_url = f["url"]
                     break
-            # Fallback to any format with URL
             if not video_url:
                 for f in reversed(info.get("formats", [])):
                     if f.get("url"):
@@ -122,133 +140,212 @@ def fetch_ytdlp(url):
 
 
 # ==========================
-# METHOD 2: EMBEDDED JSON SCRAPE (FALLBACK)
+# METHOD 2: INSTAGRAM DOWNLOADER API (savefrom.net style)
 # ==========================
 
-def fetch_embedded_json(url):
-    """Scrape Instagram page for embedded JSON data"""
+def fetch_savefrom(url):
+    """Try savefrom.net API"""
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Referer": "https://www.instagram.com/",
-        }
-
-        r = session.get(url, headers=headers, timeout=10, allow_redirects=True)
-
-        if r.status_code != 200:
-            return None
-
-        # Look for sharedData or additional data in script tags
-        patterns = [
-            r'<script type="text/javascript">window\._sharedData = (.*?);</script>',
-            r'<script type="application/json" data-sjs>(.*?)</script>',
-            r'"video_url":"(https://[^"]+)"',
-            r'"contentUrl":"(https://[^"]+)"',
-        ]
-
-        for pattern in patterns:
-            matches = re.findall(pattern, r.text)
-            for match in matches:
-                if "http" in match:
-                    # Try to parse JSON or extract URL
-                    try:
-                        data = json.loads(match)
-                        if isinstance(data, dict):
-                            # Navigate through possible structures
-                            video_url = (
-                                data.get("entry_data", {})
-                                .get("PostPage", [{}])[0]
-                                .get("graphql", {})
-                                .get("shortcode_media", {})
-                                .get("video_url")
-                            )
-                            if video_url:
-                                return {"video_url": video_url, "title": "Instagram Video", "thumbnail": "", "uploader": ""}
-                    except:
-                        # Direct URL match
-                        if match.startswith("http") and (".mp4" in match or "instagram.com" in match):
-                            return {"video_url": match, "title": "Instagram Video", "thumbnail": "", "uploader": ""}
-
-        # Try og:video meta tag
-        soup = BeautifulSoup(r.text, "html.parser")
-        og_video = soup.find("meta", property="og:video")
-        if og_video and og_video.get("content"):
-            return {
-                "video_url": og_video["content"],
-                "title": "Instagram Video",
-                "thumbnail": "",
-                "uploader": ""
+        api_url = "https://savefrom.net/api/convert"
+        res = session.post(
+            api_url,
+            data={"url": url},
+            timeout=15,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": "https://savefrom.net",
+                "Referer": "https://savefrom.net/",
             }
-
-        # Try all meta tags for video URLs
-        for meta in soup.find_all("meta"):
-            content = meta.get("content", "")
-            if content and content.startswith("http") and (".mp4" in content or "cdninstagram" in content):
-                return {
-                    "video_url": content,
-                    "title": "Instagram Video",
-                    "thumbnail": "",
-                    "uploader": ""
-                }
-
-    except Exception as e:
-        print("HTML scrape error:", e)
-
-    return None
-
-
-# ==========================
-# METHOD 3: GRAPHQL API (LAST RESORT)
-# ==========================
-
-def fetch_graphql(url):
-    """Try to extract shortcode and query GraphQL"""
-    try:
-        # Extract shortcode from URL
-        match = re.search(r'instagram\.com/(?:p|reel|tv)/([^/?]+)', url)
-        if not match:
-            return None
-
-        shortcode = match.group(1)
-
-        # Instagram's public GraphQL endpoint (requires no auth for public posts sometimes)
-        graphql_url = "https://www.instagram.com/api/v1/media/shortcode/{}/".format(shortcode)
-
-        headers = {
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
-            "Accept": "*/*",
-            "X-IG-App-ID": "936619743392459",  # Instagram web app ID
-            "X-Requested-With": "XMLHttpRequest",
-            "Referer": "https://www.instagram.com/",
-        }
-
-        r = session.get(graphql_url, headers=headers, timeout=10)
-
-        if r.status_code == 200:
-            data = r.json()
-            video_url = (
-                data.get("items", [{}])[0]
-                .get("video_versions", [{}])[0]
-                .get("url")
-            )
+        )
+        if res.status_code == 200:
+            data = res.json()
+            video_url = data.get("url") or data.get("download_url")
             if video_url:
                 return {
                     "video_url": video_url,
-                    "title": data.get("items", [{}])[0].get("caption", {}).get("text", "Instagram Video")[:100],
-                    "thumbnail": "",
-                    "uploader": data.get("items", [{}])[0].get("user", {}).get("username", ""),
+                    "title": data.get("meta", {}).get("title", "Instagram Video"),
+                    "thumbnail": data.get("thumb", ""),
+                    "uploader": "",
                 }
-
     except Exception as e:
-        print("GraphQL error:", e)
-
+        print("savefrom error:", e)
     return None
 
 
 # ==========================
-# FETCH CONTROLLER
+# METHOD 3: SNAPINSTA / DDOWNR STYLE API
+# ==========================
+
+def fetch_snapinsta(url):
+    """Try snapinsta.app API pattern"""
+    try:
+        # First get token
+        res = session.get("https://snapinsta.app/", timeout=10)
+        if res.status_code != 200:
+            return None
+
+        # Extract any token if needed
+        token_match = re.search(r'name="_token" value="([^"]+)"', res.text)
+        token = token_match.group(1) if token_match else ""
+
+        res = session.post(
+            "https://snapinsta.app/action.php",
+            data={"url": url, "token": token, "action": "post"},
+            timeout=15,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": "https://snapinsta.app",
+                "Referer": "https://snapinsta.app/",
+            }
+        )
+
+        if res.status_code == 200:
+            # Response is usually HTML with download links
+            soup = BeautifulSoup(res.text, "html.parser")
+            video_tag = soup.find("a", {"download": True})
+            if video_tag and video_tag.get("href"):
+                return {
+                    "video_url": video_tag["href"],
+                    "title": "Instagram Video",
+                    "thumbnail": "",
+                    "uploader": "",
+                }
+
+            # Try to find any video URL in the response
+            video_match = re.search(r'href="(https://[^"]+\.mp4[^"]*)"', res.text)
+            if video_match:
+                return {
+                    "video_url": video_match.group(1),
+                    "title": "Instagram Video",
+                    "thumbnail": "",
+                    "uploader": "",
+                }
+
+    except Exception as e:
+        print("snapinsta error:", e)
+    return None
+
+
+# ==========================
+# METHOD 4: INFLACT / TOOLZU PATTERN
+# ==========================
+
+def fetch_inflact(url):
+    """Try inflact-style API"""
+    try:
+        shortcode = extract_shortcode(url)
+        if not shortcode:
+            return None
+
+        res = session.post(
+            "https://api.inflact.com/v2/media",
+            json={"url": url, "shortcode": shortcode},
+            timeout=15,
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "https://inflact.com",
+                "Referer": "https://inflact.com/",
+            }
+        )
+
+        if res.status_code == 200:
+            data = res.json()
+            video_url = data.get("video_url") or data.get("url")
+            if video_url:
+                return {
+                    "video_url": video_url,
+                    "title": data.get("title", "Instagram Video"),
+                    "thumbnail": data.get("thumbnail", ""),
+                    "uploader": data.get("username", ""),
+                }
+
+    except Exception as e:
+        print("inflact error:", e)
+    return None
+
+
+# ==========================
+# METHOD 5: DDINSTA / IGRAM PATTERN
+# ==========================
+
+def fetch_ddinsta(url):
+    """Try ddinsta.com or similar pattern"""
+    try:
+        res = session.post(
+            "https://www.ddinstagram.com/reels/",
+            data={"url": url},
+            timeout=15,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": "https://www.ddinstagram.com",
+                "Referer": "https://www.ddinstagram.com/",
+            }
+        )
+
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, "html.parser")
+            video = soup.find("video")
+            if video and video.get("src"):
+                return {
+                    "video_url": video["src"],
+                    "title": "Instagram Video",
+                    "thumbnail": "",
+                    "uploader": "",
+                }
+
+            # Try download links
+            for a in soup.find_all("a", href=True):
+                if "download" in a.get("class", []) or ".mp4" in a["href"]:
+                    return {
+                        "video_url": a["href"],
+                        "title": "Instagram Video",
+                        "thumbnail": "",
+                        "uploader": "",
+                    }
+
+    except Exception as e:
+        print("ddinsta error:", e)
+    return None
+
+
+# ==========================
+# METHOD 6: RAPIDAPI INSTAGRAM DOWNLOADER
+# ==========================
+
+def fetch_rapidapi(url):
+    """RapidAPI Instagram downloader (requires API key)"""
+    api_key = os.getenv("RAPIDAPI_KEY")
+    if not api_key:
+        return None
+
+    try:
+        res = session.get(
+            "https://instagram-downloader-download-instagram-videos-stories1.p.rapidapi.com/get-info-rapid/",
+            params={"url": url},
+            timeout=15,
+            headers={
+                "X-RapidAPI-Key": api_key,
+                "X-RapidAPI-Host": "instagram-downloader-download-instagram-videos-stories1.p.rapidapi.com",
+            }
+        )
+        if res.status_code == 200:
+            data = res.json()
+            video_url = data.get("video_url") or data.get("download_url")
+            if video_url:
+                return {
+                    "video_url": video_url,
+                    "title": data.get("title", "Instagram Video"),
+                    "thumbnail": data.get("thumbnail", ""),
+                    "uploader": data.get("username", ""),
+                }
+
+    except Exception as e:
+        print("rapidapi error:", e)
+    return None
+
+
+# ==========================
+# FETCH CONTROLLER (PARALLEL)
 # ==========================
 
 def get_video(url):
@@ -256,18 +353,27 @@ def get_video(url):
     if url in cache:
         return cache[url]
 
-    # Try methods in order of reliability
-    result = fetch_ytdlp(url)
+    # Run all methods in parallel, return first success
+    methods = [
+        fetch_ytdlp,
+        fetch_savefrom,
+        fetch_snapinsta,
+        fetch_inflact,
+        fetch_ddinsta,
+        fetch_rapidapi,
+    ]
 
-    if not result:
-        result = fetch_embedded_json(url)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {executor.submit(method, url): method.__name__ for method in methods}
 
-    if not result:
-        result = fetch_graphql(url)
-
-    if result and result.get("video_url"):
-        cache[url] = result
-        return result
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                result = future.result()
+                if result and result.get("video_url"):
+                    cache[url] = result
+                    return result
+            except Exception as e:
+                print(f"Method {futures[future]} failed: {e}")
 
     return None
 
@@ -284,13 +390,20 @@ def fetch():
     if not url:
         return jsonify({"success": False, "message": "No URL provided"}), 400
 
+    # Basic validation
+    if "instagram.com" not in url:
+        return jsonify({"success": False, "message": "Invalid Instagram URL"}), 400
+
     c.execute("UPDATE stats SET value=value+1 WHERE key='requests'")
     conn.commit()
 
     result = get_video(url)
 
     if not result or not result.get("video_url"):
-        return jsonify({"success": False, "message": "Failed to fetch video. Instagram may have blocked this content or it requires login."}), 500
+        return jsonify({
+            "success": False,
+            "message": "Failed to fetch video. Instagram may require login, or the post is private/deleted. Try a public post."
+        }), 500
 
     c.execute("UPDATE stats SET value=value+1 WHERE key='downloads'")
     c.execute("UPDATE stats SET value=value+1 WHERE key='videos_served'")
@@ -400,5 +513,5 @@ def home():
 # ==========================
 
 if __name__ == "__main__":
-    import json  # needed for embedded JSON parsing
+    import os
     app.run(host="0.0.0.0", port=5000)
