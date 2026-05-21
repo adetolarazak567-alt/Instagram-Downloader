@@ -50,7 +50,7 @@ def extract_shortcode(url):
         r'instagram\.com/p/([^/?]+)',
         r'instagram\.com/reel/([^/?]+)',
         r'instagram\.com/reels/([^/?]+)',
-        r'instagram\.com/tv/([^/?]+),
+        r'instagram\.com/tv/([^/?]+)',
     ]
     for pattern in patterns:
         match = re.search(pattern, url)
